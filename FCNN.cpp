@@ -3,6 +3,10 @@
 //
 // Written by: Baranyi Karoly 
 // 2017-11-23
+// 
+// 2021-11-18 added very simple implementation of weight normalization described in [1] Tim Salimans, Diederik P. Kingma: Weight Normalization: A Simple Reparameterization to Accelerate Training of Deep Neural Networks
+
+#define USE_WEIGHT_NORMALIZATION
 
 #include <vector>
 #include <list>
@@ -120,7 +124,12 @@ class NNFullyConnected : public NNLayer {
 private:
 	unsigned	_outputsize = 0;
 	unsigned	_inputsize = 0;
+#ifdef USE_WEIGHT_NORMALIZATION
+	mtx_t		_weightupdate_v;
+	vec_t		_weightupdate_g;
+#else
 	mtx_t		_weightupdate;
+#endif
 	unsigned	_weightmatrix_rows;
 	unsigned	_weightmatrix_cols;
 private:
@@ -130,7 +139,12 @@ private:
 	acfunc_t	_activFnDerived;
 	vec_t		_cached_preout;
 	sca_t		_learningrate;
+#ifdef USE_WEIGHT_NORMALIZATION
+	mtx_t		_weightmatrix_v;		// v,g, in [1] eq (2)
+	vec_t		_weightmatrix_g;
+#else
 	mtx_t		_weightmatrix;					
+#endif
 	vec_t		_bias;
 	vec_t		_biasupdate;
 	void InitMatrix(unsigned n, unsigned m);
@@ -147,6 +161,11 @@ public:
 	virtual bool IsValid() const override;
 	friend bool LoadMatrix(const string& fn, NeuralNetwork& nn);
 	friend bool SaveMatrix(const string& fn, NeuralNetwork& nn, bool because_mtxcurve);
+private:
+#ifdef USE_WEIGHT_NORMALIZATION
+	mtx_t CalcWeightMatrixFromVandG() const;
+	void CalcGandVupdateFromWupdate(const mtx_t& wu, mtx_t& vu, vec_t& gu) const;
+#endif
 };
 
 // class for pseudo layer at the end of network
@@ -607,19 +626,38 @@ void NNFullyConnected::InitMatrix(unsigned n, unsigned m)
 {
 	_weightmatrix_rows = n;
 	_weightmatrix_cols = m;
+#ifdef USE_WEIGHT_NORMALIZATION
+	_weightmatrix_v.resize(n*m);
+	_weightupdate_v.resize(n*m);
+	_weightmatrix_g.resize(n);
+	_weightupdate_g.resize(n);
+
+	_weightupdate_v = 0;
+	_weightupdate_g = 0;
+#else
 	_weightmatrix.resize(n*m);
 	_weightupdate.resize(n*m);
+	_weightupdate = 0;
+#endif
 	_bias.resize(_weightmatrix_rows);
 	_biasupdate.resize(_weightmatrix_rows);
-	_weightupdate = 0;
 	_biasupdate = 0;
 	
 	std::default_random_engine generator;
 	std::normal_distribution<double> distribution(global_mtxev, global_mtxd);
 
+#ifdef USE_WEIGHT_NORMALIZATION
+	for (unsigned i = 0; i < _weightmatrix_v.size(); ++i) {
+		_weightmatrix_v[i] = static_cast<sca_t>(distribution(generator));
+	}
+	for (unsigned i = 0; i < _weightmatrix_g.size(); ++i) {
+		_weightmatrix_g[i] = static_cast<sca_t>(distribution(generator));
+	}
+#else
 	for (unsigned i = 0; i < _weightmatrix.size(); ++i) {
 		_weightmatrix[i] = static_cast<sca_t>(distribution(generator));
 	}
+#endif
 	
 	for (unsigned i = 0; i < _bias.size(); ++i) {
 		_bias[i] = static_cast<sca_t>(distribution(generator));
@@ -627,7 +665,12 @@ void NNFullyConnected::InitMatrix(unsigned n, unsigned m)
 }
 
 void NNFullyConnected::InitBatch() {
+#ifdef USE_WEIGHT_NORMALIZATION
+	_weightupdate_v = 0;
+	_weightupdate_g = 0;
+#else
 	_weightupdate = 0;
+#endif
 	_biasupdate = 0;
 	_batchcnt = 0;
 }
@@ -651,8 +694,15 @@ bool NNFullyConnected::IsValid() const {
 		(_weightmatrix_cols == _inputsize) &&
 		(_weightmatrix_rows == _outputsize) &&
 		(_learningrate > 0) &&
+#ifdef USE_WEIGHT_NORMALIZATION
+		(_weightmatrix_v.size() == _weightmatrix_cols * _weightmatrix_rows) &&
+		(_weightupdate_v.size() == _weightmatrix_v.size()) &&
+		(_weightmatrix_g.size() == _weightmatrix_rows) &&
+		(_weightupdate_g.size() == _weightmatrix_g.size()) &&
+#else
 		(_weightmatrix.size() == _weightmatrix_cols * _weightmatrix_rows) &&
 		(_weightupdate.size() == _weightmatrix.size()) &&
+#endif
 		(_bias.size() == _weightmatrix_rows) &&
 		(_biasupdate.size() == _weightmatrix_rows) &&
 		IsValidAcFunc(_activFn) &&
@@ -666,11 +716,85 @@ void NNFullyConnected::SetMother(NeuralNetwork* mothernetwork) {
 	}
 }
 
+#ifdef USE_WEIGHT_NORMALIZATION
+// see [1] eq (2), difference: in (2) g is scalar, v,w are vectors, here g is a vector, v,w are matrices - we apply (2) row-by-row
+mtx_t NNFullyConnected::CalcWeightMatrixFromVandG() const
+{
+	mtx_t w(_weightmatrix_v.size());		// _weightmatrix_rows*_weightmatrix_cols
+	w = 0;
+	for (size_t i = 0; i < _weightmatrix_rows; ++i)
+	{
+		const size_t row_len = _weightmatrix_cols;
+		sca_t const* v_row_vec = &_weightmatrix_v[i * row_len];
+		sca_t* w_row_vec = &w[i * row_len];
+
+		sca_t row_norm = 0;
+		for (size_t j = 0; j < row_len; ++j)
+		{
+			row_norm += pow(v_row_vec[j], 2.0);
+		}
+		row_norm = sqrt(row_norm);
+
+		for (size_t j = 0; j < row_len; ++j)
+		{
+			w_row_vec[j] = v_row_vec[j] / row_norm * _weightmatrix_g[i];
+		}
+	}
+	return w;
+}
+
+// see [1] eq (3) - we apply (3) for each row vector of w,v, each component of g
+void NNFullyConnected::CalcGandVupdateFromWupdate(const mtx_t& wu, mtx_t& vu, vec_t& gu) const
+{
+	gu.resize(_weightmatrix_g.size());		// _weightmatrix_rows
+	vu.resize(_weightmatrix_v.size());		// _weightmatrix_rows*_weightmatrix_cols
+	for (size_t i = 0; i < _weightmatrix_rows; ++i)
+	{
+		const size_t row_len = _weightmatrix_cols;
+		sca_t const* v_row_vec = &_weightmatrix_v[i * row_len];
+		sca_t const* wu_row_vec = &wu[i * row_len];
+		sca_t* vu_row_vec = &vu[i * row_len];
+
+		// calculate ith component of gu
+
+		sca_t row_norm_sq = 0;
+		for (size_t j = 0; j < row_len; ++j)
+		{
+			row_norm_sq += pow(v_row_vec[j], 2.0);
+		}
+		const sca_t row_norm = sqrt(row_norm_sq);
+
+		sca_t inner_prod = 0;
+		for (size_t j = 0; j < row_len; ++j)
+		{
+			inner_prod += v_row_vec[j] * wu_row_vec[j];
+		}
+		gu[i] = inner_prod / row_norm;
+
+		// calculate ith row of vu
+
+		for (size_t j = 0; j < row_len; ++j)
+		{
+			const sca_t minuend = _weightmatrix_g[i] / row_norm * wu_row_vec[j];
+			const sca_t subtrahend = _weightmatrix_g[i] * gu[i] / row_norm_sq * v_row_vec[j];
+			vu_row_vec[j] = minuend - subtrahend;
+		}
+	}
+}
+#endif//USE_WEIGHT_NORMALIZATION
+
 vec_t NNFullyConnected::FwdProp(vec_t& input)
 {
 	vec_t output;
 	_input = input;
+
+#ifdef USE_WEIGHT_NORMALIZATION
+	mtx_t temp_weightmatrix = CalcWeightMatrixFromVandG();			//TEMP
+	op_MtxMtxMul(temp_weightmatrix, _input, output, _weightmatrix_rows, _weightmatrix_cols, 1);
+#else
 	op_MtxMtxMul(_weightmatrix, _input, output, _weightmatrix_rows, _weightmatrix_cols, 1);
+#endif
+
 	output += _bias;
 	_cached_preout = output;
 	ApplyFunc(output, _activFn);
@@ -683,19 +807,40 @@ vec_t NNFullyConnected::BackProp(vec_t & Wdelta)
 	ApplyFunc(_cached_preout, _activFnDerived);
 	op_MtxMtxHadamard(Wdelta, _cached_preout, mydelta, 1, Wdelta.size()); 
 	vec_t delta_to_pass;
+#ifdef USE_WEIGHT_NORMALIZATION
+	mtx_t temp_weightmatrix = CalcWeightMatrixFromVandG();			//TEMP
+	op_MtxTMtxMul(temp_weightmatrix, mydelta, delta_to_pass, _weightmatrix_cols, _weightmatrix_rows, 1);
+#else
 	op_MtxTMtxMul(_weightmatrix, mydelta, delta_to_pass, _weightmatrix_cols, _weightmatrix_rows, 1);
+#endif
 		// W^T * delta
+
 	mtx_t wu;
 	op_MtxMtxTMul(mydelta, _input, wu, mydelta.size(), 1, _input.size());
 		// delta * _input^T
+
+#ifdef USE_WEIGHT_NORMALIZATION
+	mtx_t vu;
+	vec_t gu;
+	CalcGandVupdateFromWupdate(wu, vu, gu);
+	_weightupdate_v -= vu;
+	_weightupdate_g -= gu;
+#else
 	_weightupdate -= wu;
+#endif
+
 	_biasupdate -= mydelta;
 	_batchcnt++;
 	return delta_to_pass;
 }
 
 void NNFullyConnected::UpdateWeightMatrix() {
+#ifdef USE_WEIGHT_NORMALIZATION
+	_weightmatrix_v += _learningrate * _weightupdate_v;
+	_weightmatrix_g += _learningrate * _weightupdate_g;
+#else
 	_weightmatrix += _learningrate * _weightupdate;
+#endif
 	_bias += _learningrate * _biasupdate;
 }
 
@@ -1097,9 +1242,18 @@ bool LoadMatrix(const string& fn, NeuralNetwork& nn) {
 		} // for it
 		for (auto it = nn._layers.begin(); it != nn._layers.end(); ++it) {
 			NNFullyConnected& fcl = dynamic_cast<NNFullyConnected&>(*(it->get()));
+#ifdef USE_WEIGHT_NORMALIZATION
+			for (unsigned idx = 0; idx < fcl._inputsize * fcl._outputsize; ++idx) {
+				is >> fcl._weightmatrix_v[idx];
+			}
+			for (unsigned idx = 0; idx < fcl._outputsize; ++idx) {
+				is >> fcl._weightmatrix_g[idx];
+			}
+#else
 			for (unsigned idx = 0; idx < fcl._inputsize * fcl._outputsize; ++idx) {
 				is >> fcl._weightmatrix[idx];
 			}
+#endif
 			for (unsigned idx = 0; idx < fcl._outputsize; ++idx) {
 				is >> fcl._bias[idx];
 			}
@@ -1127,11 +1281,24 @@ bool SaveMatrix(const string& fn, NeuralNetwork& nn, bool because_mtxcurve = fal
 		for (auto it = nn._layers.begin(); it != nn._layers.end(); ++it) {
 			NNFullyConnected& fcl = dynamic_cast<NNFullyConnected&>(*(it->get()));
 			if (because_mtxcurve) os << "LAYER " << it - nn._layers.begin() << std::endl;
-			unsigned wmsize = fcl._weightmatrix_cols*fcl._weightmatrix_rows;
-			for (unsigned i = 0; i < wmsize; ++i) {
-				os << fcl._weightmatrix[i] << ((i+1) % fcl._weightmatrix_cols == 0 ? "\n" : " ");
+#ifdef USE_WEIGHT_NORMALIZATION
+			unsigned wmsize_v = fcl._weightmatrix_cols * fcl._weightmatrix_rows;
+			for (unsigned i = 0; i < wmsize_v; ++i) {
+				os << fcl._weightmatrix_v[i] << ((i + 1) % fcl._weightmatrix_cols == 0 ? "\n" : " ");
 			} // for i
 			os << "\n\n";
+			unsigned wmsize_g = fcl._weightmatrix_rows;
+			for (unsigned i = 0; i < wmsize_g; ++i) {
+				os << fcl._weightmatrix_g[i] << ((i + 1) % fcl._weightmatrix_cols == 0 ? "\n" : " ");
+			} // for i
+			os << "\n\n";
+#else
+			unsigned wmsize = fcl._weightmatrix_cols * fcl._weightmatrix_rows;
+			for (unsigned i = 0; i < wmsize; ++i) {
+				os << fcl._weightmatrix[i] << ((i + 1) % fcl._weightmatrix_cols == 0 ? "\n" : " ");
+			} // for i
+			os << "\n\n";
+#endif
 			unsigned biassize = fcl._outputsize;
 			for (unsigned i = 0; i < biassize; ++i) {
 				os << fcl._bias[i] << " ";
