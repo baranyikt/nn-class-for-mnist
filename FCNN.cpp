@@ -35,6 +35,10 @@ using std::unique_ptr;
 using std::valarray;
 using std::string;
 
+using std::cout;
+using std::cerr;
+using std::endl;
+
 using sca_t = float;												// scalar type for arithmetic operators, float/double/long double
 using vec_t = valarray<sca_t>;										// (math) vector and matrix types based on that
 using mtx_t = valarray<sca_t>;
@@ -63,8 +67,8 @@ constexpr unsigned NORMALIZE_DEFAULT = 1;
 constexpr unsigned SHOWCURVE_DEFAULT = 0;
 constexpr unsigned SHOWCURVETRUNC_DEFAULT = 0;
 
-constexpr sca_t DEFAULT_MTXEV = 0;
-constexpr sca_t DEFAULT_MTXD = static_cast<sca_t>(0.01f);
+constexpr sca_t DEFAULT_MTXMEAN = 0;
+constexpr sca_t DEFAULT_MTXDEV = static_cast<sca_t>(0.01f);
 
 const string LOADSAVEMATRIX_DEFAULT = "";
 const string SAVEMATRIX_DEFAULT = "";
@@ -85,8 +89,8 @@ sca_t global_learningrate = LEARNINGRATE_DEFAULT;					// LR
 unsigned global_normalize_enabled = NORMALIZE_DEFAULT;				// transforms training and test data to have 0 mean and 1 deviance
 unsigned global_showcurve_enabled = SHOWCURVE_DEFAULT;				// if true (1), displays learning rate statistics after every batch
 unsigned global_showcurve_trunc = SHOWCURVETRUNC_DEFAULT;			// != 0 if learning rate stats should be based on a truncated dataset (for speed reasons)
-sca_t global_mtxev = DEFAULT_MTXEV;									// desired expected value in random matrix generator
-sca_t global_mtxd = DEFAULT_MTXD;									// ... deviance
+sca_t global_mtxmean = DEFAULT_MTXMEAN;								// desired expected value in random matrix generator
+sca_t global_mtxdev = DEFAULT_MTXDEV;								// ... deviance
 
 string global_savematrix_fn = SAVEMATRIX_DEFAULT;					// if not empty, save the resulting matrix at the very end to this path
 string global_loadmatrix_fn = LOADMATRIX_DEFAULT;					// saved matrices from previous runs can be loaded at startup instead of using the default
@@ -159,7 +163,7 @@ private:
 	unsigned	_batchcnt = 0;
 	vec_t		_input;
 	vec_t		_output;
-	sca_t		_learningrate;
+	sca_t		_learningrate = LEARNINGRATE_DEFAULT;
 #ifdef USE_WEIGHT_NORMALIZATION
 	mtx_t		_weightmatrix_v;		// v,g, in [1] eq (2)
 	vec_t		_weightmatrix_g;
@@ -171,7 +175,7 @@ private:
 	void InitMatrix(unsigned n, unsigned m);
 public: 
 	NNFullyConnected(unsigned inputsize) :
-		_inputsize(inputsize), _learningrate(LEARNINGRATE_DEFAULT) {};
+		_inputsize(inputsize) {};
 	virtual void LinkLayer(NeuralNetwork* mothernetwork, unsigned nextLayerSize) override;
 	virtual vec_t FwdProp(vec_t& input) override;
 	virtual vec_t BackProp(vec_t& Wdelta) override;
@@ -239,8 +243,8 @@ public:
 	vector<vec_t>	testimages;
 	vector<sca_t>	testlabels;
 	bool ReadDB(const string & fn_images, const string & fn_labels, uint32_t magic_images, uint32_t magic_labels, vector<vec_t>& images, vector<sca_t>& labels);
-	void CalcStatParams(vector<vec_t>& data, sca_t& mean, sca_t& std);
-	void NormalizeDB(vector<vec_t>& data, const sca_t& mean, const sca_t& std);
+	void CalcStatParams(vector<vec_t>& data, sca_t& mean, sca_t& dev);
+	void NormalizeDB(vector<vec_t>& data, const sca_t& mean, const sca_t& dev);
 	void FeedDatabase(const vector<vec_t>& database, const vector<sca_t>& truthdb, NeuralNetwork & neuralnet, const unsigned & batchSize, const sca_t & learningRate);
 	void TestDatabase(const vector<vec_t>& database, const vector<sca_t>& truthdb, NeuralNetwork & neuralnet, unsigned showcurve_trunc = 0, bool silent = false);
 	void PrintMatrixToConsole(const mtx_t & mtx, unsigned rows, unsigned cols);
@@ -458,62 +462,62 @@ NeuralNetwork& operator<< (NeuralNetwork& nn, unique_ptr<NNLayer>&& layer) {
 }
 
 void Usage(const string& cmd0) {
-	std::cout << "Usage:\n\n";
-	std::cout << "  " << cmd0 << "  <layer1size> <activationfn1> <layer2size> <activationfn2> ... <errorfn> [<options>]" << std::endl;
-	std::cout << std::endl;
-	std::cout << "  first layer's size has to be " << INPUT_LAYER_SIZE << "\n";
-	std::cout << "  number of layers, n can be arbitrary\n";
-	std::cout << "  possible activation functions:\n";
+	cout << "Usage:\n\n";
+	cout << "  " << cmd0 << "  <layer1size> <activationfn1> <layer2size> <activationfn2> ... <errorfn> [<options>]" << endl;
+	cout << endl;
+	cout << "  first layer's size has to be " << INPUT_LAYER_SIZE << "\n";
+	cout << "  number of layers, n can be arbitrary\n";
+	cout << "  possible activation functions:\n";
 	for (auto it : global_actFns) {
-		std::cout << "    " << it.first << "\n";
+		cout << "    " << it.first << "\n";
 	}
-	std::cout << "  possible error functions:\n";
+	cout << "  possible error functions:\n";
 	for (auto it : global_errFns) {
-		std::cout << "    " << it.first << "\n";
+		cout << "    " << it.first << "\n";
 	}
-	std::cout << "  syntax needed for options: --option=value\n";
-	std::cout << "  possible options:\n";
-	std::cout << "    ";
+	cout << "  syntax needed for options: --option=value\n";
+	cout << "  possible options:\n";
+	cout << "    ";
 	for (auto it : global_strOpts) {
-		std::cout << it.first << " ";
+		cout << it.first << " ";
 	}
-	std::cout << "\n    ";
+	cout << "\n    ";
 	for (auto it : global_floatOpts) {
-		std::cout << it.first << " ";
+		cout << it.first << " ";
 	}
-	std::cout << "\n    ";
+	cout << "\n    ";
 	for (auto it : global_intOpts) {
-		std::cout << it.first << " ";
+		cout << it.first << " ";
 	}
-	std::cout << "\n  (some of them may mean the same)\n\n";
+	cout << "\n  (some of them may mean the same)\n\n";
 	exit(0);
 }
 
 // builds network based on the command-line parameters it's given (see also Usage())
 bool BuildNetwork(NeuralNetwork & nn, std::list<string>& params) {
-	std::cout << "----------NETWORK----------\n";
+	cout << "----------NETWORK----------\n";
 	unsigned layerno = 1;
 	bool has_terminal_layer = false;
 	while ((params.size() > 0) && (IsInteger(params.front()))) {
 		int layersize = atoi(params.front().c_str()); 
 		params.pop_front();
-		std::cout << "layer #" << layerno << " size " << layersize << " ";
+		cout << "layer #" << layerno << " size " << layersize << " ";
 		if ((layerno == 1) && (layersize != INPUT_LAYER_SIZE)) {
-			std::cerr << "  first layer input size has to match input dimension (" << INPUT_LAYER_SIZE << ")" << std::endl;
+			cerr << "  first layer input size has to match input dimension (" << INPUT_LAYER_SIZE << ")" << endl;
 			return false;
 		}
 		if (params.empty()) {
-			std::cerr << "  no activation function for layer #" << layerno << " (size: " << layersize << ")" << std::endl;
+			cerr << "  no activation function for layer #" << layerno << " (size: " << layersize << ")" << endl;
 			return false;
 		}
 		string actfnname = params.front(); 
 		params.pop_front();
 		auto it = global_actFns.find(actfnname);
 		if (it == global_actFns.end()) {
-			std::cerr << "  unknown activation function: " << actfnname << std::endl;
+			cerr << "  unknown activation function: " << actfnname << endl;
 			return false;
 		}
-		std::cout << "act.fn. " << it->first << std::endl;
+		cout << "act.fn. " << it->first << endl;
 		auto activationFunction = it->second.first;
 		auto activationFnDerived = it->second.second;
 		nn << std::make_unique<NNFullyConnected>(layersize);
@@ -524,7 +528,7 @@ bool BuildNetwork(NeuralNetwork & nn, std::list<string>& params) {
 			if (it2 != global_errFns.end()) {
 				// then this will be treated as the last argument -- pop only if this is the case
 				params.pop_front(); 
-				std::cout << "errfn. " << it2->first << std::endl;
+				cout << "errfn. " << it2->first << endl;
 				nn << std::make_unique<NNTerminal>(TERMINAL_LAYER_SIZE, it2->second.first, it2->second.second);
 				has_terminal_layer = true;
 				break;
@@ -533,7 +537,7 @@ bool BuildNetwork(NeuralNetwork & nn, std::list<string>& params) {
 		++layerno;
 	}
 	if (!has_terminal_layer) {
-		std::cout << "  no error function given, using default (MSE)" << std::endl;
+		cout << "  no error function given, using default (MSE)" << endl;
 		nn << std::make_unique<NNTerminal>(TERMINAL_LAYER_SIZE, squared_err, squared_err_d);
 	}
 	nn.LinkLayerAll();
@@ -555,12 +559,12 @@ bool ParseArgs(int argc, const char* argv[], DBManager& dbm, NeuralNetwork& nn) 
 	}
 	for (const auto& param : params) {
 		if (param.substr(0, 2) != "--") {
-			std::cerr << "  unknown parameter ignored: " << param << std::endl;
+			cerr << "  unknown parameter ignored: " << param << endl;
 			continue;
 		}
 		auto sep = param.find('=');
 		if (sep == string::npos) {
-			std::cerr << "  unknown parameter ignored: " << param << std::endl;
+			cerr << "  unknown parameter ignored: " << param << endl;
 			continue;
 		}
 		string pname = param.substr(2, sep - 2); 
@@ -576,7 +580,7 @@ bool ParseArgs(int argc, const char* argv[], DBManager& dbm, NeuralNetwork& nn) 
 			auto it = global_intOpts.find(pname);
 			if (it != global_intOpts.end()) {
 				if (!IsInteger(pval)) {
-					std::cerr << "  " << pname << " option has to be an integer" << std::endl;
+					cerr << "  " << pname << " option has to be an integer" << endl;
 					return false;
 				}
 				else {
@@ -589,35 +593,35 @@ bool ParseArgs(int argc, const char* argv[], DBManager& dbm, NeuralNetwork& nn) 
 			auto it = global_floatOpts.find(pname);
 			if (it != global_floatOpts.end()) {
 				if (!IsFloat(pval)) {
-					std::cerr << "  " << pname << " option has to be a number" << std::endl;
+					cerr << "  " << pname << " option has to be a number" << endl;
 					return false;
 				}
 				*(it->second) = static_cast<sca_t>(atof(pval.c_str()));
 				continue;
 			}
 		}
-		std::cerr << "  unknown option ignored: " << pname << std::endl;
+		cerr << "  unknown option ignored: " << pname << endl;
 	} // for i
 	return true;
 }
 
 void PrintParams() {
-	vector<string> p = { "LR", "BATCHSIZE", "TRUNCDATASIZE", "NORMALIZE", "PASSES", "MTXEV", "MTXD", "CURVE", "SHOWCURVETRUNC" };
-	std::cout << "----------PARAMS----------\n";
+	vector<string> p = { "LR", "BATCHSIZE", "TRUNCDATASIZE", "NORMALIZE", "PASSES", "MTXEV", "MTXMEAN", "MTXD", "MTXDEV", "CURVE", "SHOWCURVETRUNC" };
+	cout << "----------PARAMS----------\n";
 	for (auto it : p) {
 		auto it1 = global_strOpts.find(it);
 		if (it1 != global_strOpts.end()) {
-			std::cout << it << ": " << *it1->second << std::endl;
+			cout << it << ": " << *it1->second << endl;
 			continue;
 		}
 		auto it2 = global_intOpts.find(it);
 		if (it2 != global_intOpts.end()) {
-			std::cout << it << ": " << *it2->second << std::endl;
+			cout << it << ": " << *it2->second << endl;
 			continue;
 		}
 		auto it3 = global_floatOpts.find(it);
 		if (it3 != global_floatOpts.end()) {
-			std::cout << it << ": " << *it3->second << std::endl;
+			cout << it << ": " << *it3->second << endl;
 		}
 	}
 }
@@ -668,7 +672,7 @@ void NNFullyConnected::InitMatrix(unsigned n, unsigned m)
 	_biasupdate = 0;
 	
 	std::default_random_engine generator;
-	std::normal_distribution<double> distribution(global_mtxev, global_mtxd);
+	std::normal_distribution<double> distribution(global_mtxmean, global_mtxdev);
 
 #ifdef USE_WEIGHT_NORMALIZATION
 	for (unsigned i = 0; i < _weightmatrix_v.size(); ++i) {
@@ -909,43 +913,43 @@ bool DBManager::ReadDB(const string & fn_images, const string & fn_labels, uint3
 {
 	typedef std::ifstream inputstream;
 	std::unique_ptr<unsigned char[]> mainbuffer;
-	std::cout << "Reading database (" << fn_images << ")...";
+	cout << "Reading database (" << fn_images << ")...";
 	{	// fn_images file --> mainbuffer
 		inputstream is(fn_images, std::ios::binary | std::ios::ate | std::ios::in);
 		if (!is) {
-			std::cout << "  Error opening database file!" << std::endl;
+			cout << "  Error opening database file!" << endl;
 			return false;
 		}
 		auto fileSize = static_cast<size_t>(is.tellg());
 		is.seekg(0, std::ios::beg);
 		if (fileSize == 0) {
-			std::cout << "  Error: database file seems empty (filesize=0)" << std::endl;
+			cout << "  Error: database file seems empty (filesize=0)" << endl;
 			return false;
 		}
 		try {
 			mainbuffer = std::make_unique<unsigned char[]>(fileSize);
 		}
 		catch (const std::bad_alloc& e) {
-			std::cout << "  Memory allocation error (out of memory?) [" << e.what() << "]" << std::endl;
+			cout << "  Memory allocation error (out of memory?) [" << e.what() << "]" << endl;
 			return false;
 		}
 		is.read(reinterpret_cast<char*>(mainbuffer.get()), fileSize);
-		std::cout << "OK\n";
-		std::cout << "  Filesize: " << fileSize << "\n";
+		cout << "OK\n";
+		cout << "  Filesize: " << fileSize << "\n";
 	}
 	unsigned char* bufseekptr = mainbuffer.get();
 	{	// mainbuffer -> images
 		auto temp = ReadUint32MSBF(bufseekptr);
 		if (temp != magic_images) {
-			std::cerr << "MAGIC number mismatch: " << temp << "!=" << magic_images << std::endl;
+			cerr << "MAGIC number mismatch: " << temp << "!=" << magic_images << endl;
 			return false;
 		}
-		std::cout << "  Magic [" << temp << "]=[" << magic_images << "]\n";
+		cout << "  Magic [" << temp << "]=[" << magic_images << "]\n";
 		auto expected_elements = std::min(global_truncdatasize, ReadUint32MSBF(bufseekptr)); 
-		std::cout << "  # of elements: " << expected_elements << "\n";
+		cout << "  # of elements: " << expected_elements << "\n";
 		auto rows = ReadUint32MSBF(bufseekptr);
 		auto cols = ReadUint32MSBF(bufseekptr);
-		std::cout << "  Size: " << rows << "x" << cols << "\n";
+		cout << "  Size: " << rows << "x" << cols << "\n";
 		images.reserve(expected_elements);
 		for (unsigned i = 0; i < expected_elements; ++i) {
 			images.emplace_back(rows*cols);
@@ -955,50 +959,50 @@ bool DBManager::ReadDB(const string & fn_images, const string & fn_labels, uint3
 			}
 		}
 	}
-	std::cout << "Reading labels file (" << fn_labels << ")...";
+	cout << "Reading labels file (" << fn_labels << ")...";
 	{	// fn_labels file --> mainbuffer
 		inputstream is(fn_labels, std::ios::binary | std::ios::ate | std::ios::in);
 		if (!is) {
-			std::cout << "  Error opening labels file!" << std::endl;
+			cout << "  Error opening labels file!" << endl;
 			return false;
 		}
 		int fileSize = static_cast<int>(is.tellg());
 		is.seekg(0, std::ios::beg);
 		if (fileSize == 0) {
-			std::cout << "  Error: labels file seems empty (filesize=0)" << std::endl;
+			cout << "  Error: labels file seems empty (filesize=0)" << endl;
 			return false;
 		}
 		try {
 			mainbuffer.reset(new unsigned char[fileSize]);
 		}
 		catch (const std::bad_alloc& e) {
-			std::cout << "  Memory allocation error (out of memory?) [" << e.what() << "]" << std::endl;
+			cout << "  Memory allocation error (out of memory?) [" << e.what() << "]" << endl;
 			return false;
 		}
 		is.read(reinterpret_cast<char*>(mainbuffer.get()), fileSize);
-		std::cout << "OK\n";
-		std::cout << "  Filesize: " << fileSize << "\n";
+		cout << "OK\n";
+		cout << "  Filesize: " << fileSize << "\n";
 	}
 	bufseekptr = mainbuffer.get();
 	{	// mainbuffer -> labels
 		auto temp = ReadUint32MSBF(bufseekptr);
 		if (temp != magic_labels) {
-			std::cerr << "MAGIC number mismatch: " << temp << "!=" << magic_labels << std::endl;
+			cerr << "MAGIC number mismatch: " << temp << "!=" << magic_labels << endl;
 			return false;
 		}
-		std::cout << "  Magic [" << temp << "]=[" << magic_labels << "]\n";
+		cout << "  Magic [" << temp << "]=[" << magic_labels << "]\n";
 		auto expected_elements = std::min(global_truncdatasize, ReadUint32MSBF(bufseekptr));
-		std::cout << "  # of elements: " << expected_elements << "\n";
+		cout << "  # of elements: " << expected_elements << "\n";
 		labels.reserve(expected_elements);
 		for (unsigned i = 0; i < expected_elements; ++i) {
 			labels.push_back(static_cast<sca_t>(*bufseekptr++));	// loading uint8_t data into sca_t vectors
 		}
 	}
-	std::cout << "Read OK\n";
+	cout << "Read OK\n";
 	return true;
 }
 
-void DBManager::CalcStatParams(vector<vec_t>& data, sca_t& mean, sca_t& std) {
+void DBManager::CalcStatParams(vector<vec_t>& data, sca_t& mean, sca_t& dev) {
 	double s = 0;
 	double m = 0;
 	unsigned count = 0;
@@ -1018,25 +1022,25 @@ void DBManager::CalcStatParams(vector<vec_t>& data, sca_t& mean, sca_t& std) {
 
 	s = sqrt(s / (count - 1));
 
-	mean = static_cast<sca_t>(m); std = static_cast<sca_t>(s);
+	mean = static_cast<sca_t>(m); dev = static_cast<sca_t>(s);
 }
 
-void DBManager::NormalizeDB(vector<vec_t>& data, const sca_t& mean, const sca_t& std) {
+void DBManager::NormalizeDB(vector<vec_t>& data, const sca_t& mean, const sca_t& dev) {
 	for (unsigned i = 0; i < data.size(); ++i) {
 		for (unsigned j = 0; j < data[i].size(); ++j) {
 			data[i][j] -= mean;
-			data[i][j] /= std;
+			data[i][j] /= dev;
 		}
 	}
 }
 
 void DBManager::PrintMatrixToConsole(const mtx_t& mtx, unsigned rows, unsigned cols) {
-	std::cerr << std::fixed << std::setw(4) << std::setprecision(1);
+	cerr << std::fixed << std::setw(4) << std::setprecision(1);
 	for (unsigned i = 0; i < rows; ++i) {
 		for (unsigned j = 0; j < cols; ++j) {
-			std::cerr << mtx[i*cols + j] << " ";
+			cerr << mtx[i*cols + j] << " ";
 		}
-		std::cerr << std::endl;
+		cerr << endl;
 	}
 }
 
@@ -1044,19 +1048,19 @@ void DBManager::DrawOneLetterToConsole(bool testOrTRAIN, int nr, int threshold) 
 	for (unsigned i = 0; i < 28; ++i) {
 		for (unsigned j = 0; j < 28; ++j) {
 			if (testOrTRAIN) {
-				std::cerr << (trainimages[nr][i * 28 + j] > threshold ? "X" : " ");
+				cerr << (trainimages[nr][i * 28 + j] > threshold ? "X" : " ");
 			}
 			else {
-				std::cerr << (testimages[nr][i * 28 + j] > threshold ? "X" : " ");
+				cerr << (testimages[nr][i * 28 + j] > threshold ? "X" : " ");
 			}
 		}
-		std::cerr << std::endl;
+		cerr << endl;
 	}
 	if (testOrTRAIN) {
-		std::cerr << trainlabels[nr] << std::endl;
+		cerr << trainlabels[nr] << endl;
 	}
 	else {
-		std::cerr << testlabels[nr] << std::endl;
+		cerr << testlabels[nr] << endl;
 	}
 }
 
@@ -1071,7 +1075,7 @@ void DBManager::FeedDatabase(const vector<vec_t>& database, const vector<sca_t>&
 	assert(database.size() == truthdb.size());
 	neuralnet.SetLearningRate(learningRate);
 	for (unsigned passes_cnt = 0; passes_cnt < global_passes; ++passes_cnt) {
-		std::cout << "PASS " << passes_cnt + 1 << std::endl;
+		cout << "PASS " << passes_cnt + 1 << endl;
 		auto image_cit = database.cbegin();
 		auto truth_cit = truthdb.cbegin();
 		vec_t truth_one_hot = vec_t(10);
@@ -1094,17 +1098,17 @@ void DBManager::FeedDatabase(const vector<vec_t>& database, const vector<sca_t>&
 				}
 				neuralnet.BackPropThrough();
 			} // batch
-			std::cerr << "."; // one dot for every batch
+			cerr << "."; // one dot for every batch
 			neuralnet.UpdateWeightsThrough();
 			if (global_showcurve_enabled) {
 				TestDatabase(database, truthdb, neuralnet, global_showcurve_trunc, true);
 			}
 			if (global_matrixcurve_fn != "") {
-				std::cout << "S\n";
+				cout << "S\n";
 				SaveMatrix(global_matrixcurve_fn, neuralnet, true);
 			}
 		} // database
-		std::cerr << std::endl;
+		cerr << endl;
 	} // pass
 }
 
@@ -1133,15 +1137,15 @@ void DBManager::TestDatabase(const vector<vec_t>& database, const vector<sca_t>&
 		sum_err += terminalLayer.GetResult();
 		test_hit += terminalLayer.IsAccurate();
 		++image_cit, ++truth_cit, ++test_all;
-		if (!because_showcurve && (test_all % global_batchsize == 0)) std::cerr << ".";
+		if (!because_showcurve && (test_all % global_batchsize == 0)) cerr << ".";
 		if (because_showcurve && (test_all >= showcurve_trunc)) break;
 	}
 	if (!because_showcurve) {
-		std::cout << "\nAccuracy: " << test_hit << "/" << test_all << "=" << static_cast<float>(test_hit) / test_all * 100 << "%" << std::endl;
-		std::cout << "Total error: " << sum_err << std::endl;
+		cout << "\nAccuracy: " << test_hit << "/" << test_all << "=" << static_cast<float>(test_hit) / test_all * 100 << "%" << endl;
+		cout << "Total error: " << sum_err << endl;
 	}
 	else {
-		std::cout << " " << static_cast<float>(test_hit) / test_all * 100 << "% (" << sum_err << ")" << std::endl;
+		cout << " " << static_cast<float>(test_hit) / test_all * 100 << "% (" << sum_err << ")" << endl;
 	}
 }
 
@@ -1276,18 +1280,18 @@ unsigned NNTerminal::IsAccurate() const {
 }
 
 bool LoadMatrix(const string& fn, NeuralNetwork& nn) {
-	std::cout << "Loading matrix (" << fn << ")...";
+	cout << "Loading matrix (" << fn << ")...";
 	{
 		std::ifstream is(fn, std::ios::in);
 		if (!is) {
-			std::cout << "  Error opening matrix file!" << std::endl;
+			cout << "  Error opening matrix file!" << endl;
 			return false;
 		}
 		
 		unsigned nr_layers;
 		is >> nr_layers;
 		if (nr_layers != nn._layers.size()) {
-			std::cerr << "LoadMatrix nr_size mismatch " << nr_layers << "!=" << nn._layers.size() << std::endl;
+			cerr << "LoadMatrix nr_size mismatch " << nr_layers << "!=" << nn._layers.size() << endl;
 			return false;
 		}
 		for (auto it = nn._layers.begin(); it != nn._layers.end(); ++it) {
@@ -1295,7 +1299,7 @@ bool LoadMatrix(const string& fn, NeuralNetwork& nn) {
 			unsigned isize, osize;
 			is >> isize >> osize;
 			if (fcl._inputsize != isize || fcl._outputsize != osize) {
-				std::cerr << "LoadMatrix layer size mismatch " << isize << "x" << osize << "!=" << fcl._inputsize << "x" << fcl._outputsize << std::endl;
+				cerr << "LoadMatrix layer size mismatch " << isize << "x" << osize << "!=" << fcl._inputsize << "x" << fcl._outputsize << endl;
 				return false;
 			} // if size mismatch
 		} // for it
@@ -1318,28 +1322,28 @@ bool LoadMatrix(const string& fn, NeuralNetwork& nn) {
 			}
 		} // for it
 	} // with ifstream
-	std::cout << "OK\n";
+	cout << "OK\n";
 	return true;
 }
 
 bool SaveMatrix(const string& fn, NeuralNetwork& nn, bool because_mtxcurve = false) {
 	if (!because_mtxcurve) {
-		std::cout << "Saving matrix (" << fn << ")...";
+		cout << "Saving matrix (" << fn << ")...";
 	}
 	static unsigned callcnt = 0; ++callcnt;
 	{
 		assert(fn != "");
 		std::ofstream os(fn, (because_mtxcurve ? std::ios::out | std::ios::app : std::ios::out) );			
-		if (because_mtxcurve) os << "CALLCNT " << callcnt << std::endl;
+		if (because_mtxcurve) os << "CALLCNT " << callcnt << endl;
 		os << nn._layers.size() << " ";
 		for (auto it = nn._layers.begin(); it != nn._layers.end(); ++it) {
 			NNFullyConnected& fcl = dynamic_cast<NNFullyConnected&>(*(it->get()));
 			os << fcl._inputsize << " " << fcl._outputsize << " ";
 		}
-		os << std::endl;
+		os << endl;
 		for (auto it = nn._layers.begin(); it != nn._layers.end(); ++it) {
 			NNFullyConnected& fcl = dynamic_cast<NNFullyConnected&>(*(it->get()));
-			if (because_mtxcurve) os << "LAYER " << it - nn._layers.begin() << std::endl;
+			if (because_mtxcurve) os << "LAYER " << it - nn._layers.begin() << endl;
 #ifdef USE_WEIGHT_NORMALIZATION
 			unsigned wmsize_v = fcl._weightmatrix_cols * fcl._weightmatrix_rows;
 			for (unsigned i = 0; i < wmsize_v; ++i) {
@@ -1366,7 +1370,7 @@ bool SaveMatrix(const string& fn, NeuralNetwork& nn, bool because_mtxcurve = fal
 		} // for it
 		os.close();
 	}
-	if (!because_mtxcurve) std::cout << "OK\n";
+	if (!because_mtxcurve) cout << "OK\n";
 	return true;
 }
 
@@ -1406,8 +1410,10 @@ void InitGlobalArrays() {
 	global_strOpts["SAVEMTX"] = global_strOpts["SAVEMATRIX"] = &global_savematrix_fn;
 	global_strOpts["LOADMTX"] = global_strOpts["LOADMATRIX"] = &global_loadmatrix_fn;
 	global_strOpts["MTXCURVE"] = global_strOpts["MATRIXCURVE"] = &global_matrixcurve_fn;
-	global_floatOpts["MTXEV"] = &global_mtxev;
-	global_floatOpts["MTXD"] = &global_mtxd;
+	global_floatOpts["MTXEV"] = &global_mtxmean;
+	global_floatOpts["MTXMEAN"] = &global_mtxmean;
+	global_floatOpts["MTXD"] = &global_mtxdev;
+	global_floatOpts["MTXDEV"] = &global_mtxdev;
 }
 
 int main(int argc, const char* argv[])
@@ -1463,26 +1469,26 @@ int main(int argc, const char* argv[])
 
 	PrintParams();
 
-	std::cout << "Calculating mean & std...";
-	sca_t mean, std;
-	dbm.CalcStatParams(dbm.trainimages, mean, std);
+	cout << "Calculating mean & dev...";
+	sca_t mean, dev;
+	dbm.CalcStatParams(dbm.trainimages, mean, dev);
 
-	std::cout << "\nMean: " << mean << "\nStd: " << std << std::endl;
+	cout << "\nMean: " << mean << "\nDev: " << dev << endl;
 
 	if (global_normalize_enabled) {
-		std::cout << "Normalizing...";
-		dbm.NormalizeDB(dbm.trainimages, mean, std);
+		cout << "Normalizing...";
+		dbm.NormalizeDB(dbm.trainimages, mean, dev);
 	}
 
-	std::cout << "\nValidating network...";
+	cout << "\nValidating network...";
 
 	nn.InitBatchAll();
 	if (!nn.IsValid()) {
-		std::cout << "ERROR: INVALID NETWORK" << std::endl;
+		cout << "ERROR: INVALID NETWORK" << endl;
 		exit(-1);
 	}
 	else {
-		std::cout << "OK" << std::endl;
+		cout << "OK" << endl;
 	}
 
 	{
@@ -1494,20 +1500,20 @@ int main(int argc, const char* argv[])
 		}
 	} // with mtxfn
 
-	std::cout << "\nFeeding data...\n";
+	cout << "\nFeeding data...\n";
 
 	dbm.FeedDatabase(dbm.trainimages, dbm.trainlabels, nn, global_batchsize, global_learningrate);
 
 	if (global_normalize_enabled) {
-		std::cout << "Normalizing...";
-		dbm.NormalizeDB(dbm.testimages, mean, std);
+		cout << "Normalizing...";
+		dbm.NormalizeDB(dbm.testimages, mean, dev);
 	}
 
-	std::cout << "\nTesting model on train dataset...\n";
+	cout << "\nTesting model on train dataset...\n";
 
 	dbm.TestDatabase(dbm.trainimages, dbm.trainlabels, nn);
 
-	std::cout << "\nTesting model on test dataset...\n";
+	cout << "\nTesting model on test dataset...\n";
 
 	dbm.TestDatabase(dbm.testimages, dbm.testlabels, nn);
 
@@ -1516,7 +1522,7 @@ int main(int argc, const char* argv[])
 		if (mtxfn != "") SaveMatrix(mtxfn, nn, false);
 	}
 
-	std::cout << "-------------------------------" << std::endl;
+	cout << "-------------------------------" << endl;
 
 	return 0;
 }
