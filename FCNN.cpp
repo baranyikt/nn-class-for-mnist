@@ -5,6 +5,7 @@
 // 2017-11-23
 // 
 // 2021-11-18 added very simple implementation of weight normalization described in [1] Tim Salimans, Diederik P. Kingma: Weight Normalization: A Simple Reparameterization to Accelerate Training of Deep Neural Networks
+// 2021-11-22 nonlinearity detached from fully connected layer
 
 #define USE_WEIGHT_NORMALIZATION
 
@@ -109,8 +110,8 @@ protected:
 public:
 	NNLayer() = default;
 	virtual ~NNLayer() = default;
-	virtual void SetMother(NeuralNetwork* mothernetwork) = 0;
-	virtual void NextLayerSize(unsigned nlsize) = 0;
+	virtual void LinkLayer(NeuralNetwork* mothernetwork, unsigned nextLayerSize) = 0;
+	virtual unsigned GetInputSize() const = 0;
 	virtual vec_t FwdProp(vec_t& input) = 0;
 	virtual vec_t BackProp(vec_t& Wdelta) = 0;
 	virtual void UpdateWeightMatrix() = 0;
@@ -119,7 +120,29 @@ public:
 	virtual void SetLearningRate(const sca_t& learningrate) = 0;
 };
 
-// class representing a fully connected layer in the network
+// class for applying non-linearity after fully connected layer or any other kind of layer
+class NNNonLinearity : public NNLayer {
+private:
+	unsigned	_outputsize = 0;
+	unsigned	_inputsize = 0;
+	vec_t		_input;
+	vec_t		_output;
+	acfunc_t	_activFn;
+	acfunc_t	_activFnDerived;
+public:
+	NNNonLinearity(acfunc_t activationFunction, acfunc_t derivedFunction) :
+		_activFn(activationFunction), _activFnDerived(derivedFunction) {}
+	virtual void LinkLayer(NeuralNetwork* mothernetwork, unsigned nextLayerSize) override;
+	virtual vec_t FwdProp(vec_t& input) override;
+	virtual vec_t BackProp(vec_t& Wdelta) override;
+	virtual void UpdateWeightMatrix() override {}
+	virtual void InitBatch() override {}
+	virtual unsigned GetInputSize() const override { return _inputsize; }
+	virtual void SetLearningRate(const sca_t& learningrate) override {}
+	virtual bool IsValid() const override;
+};
+
+// class representing a fully connected layer in the network -- without nonlinearity, only the affine transformation
 class NNFullyConnected : public NNLayer {
 private:
 	unsigned	_outputsize = 0;
@@ -130,14 +153,12 @@ private:
 #else
 	mtx_t		_weightupdate;
 #endif
-	unsigned	_weightmatrix_rows;
-	unsigned	_weightmatrix_cols;
+	unsigned	_weightmatrix_rows = 0;
+	unsigned	_weightmatrix_cols = 0;
 private:
 	unsigned	_batchcnt = 0;
 	vec_t		_input;
-	acfunc_t	_activFn;
-	acfunc_t	_activFnDerived;
-	vec_t		_cached_preout;
+	vec_t		_output;
 	sca_t		_learningrate;
 #ifdef USE_WEIGHT_NORMALIZATION
 	mtx_t		_weightmatrix_v;		// v,g, in [1] eq (2)
@@ -149,14 +170,14 @@ private:
 	vec_t		_biasupdate;
 	void InitMatrix(unsigned n, unsigned m);
 public: 
-	NNFullyConnected(unsigned inputsize, acfunc_t activationFunction, acfunc_t derivedFunction) :
-		_inputsize(inputsize), _activFn(activationFunction), _activFnDerived(derivedFunction), _learningrate(LEARNINGRATE_DEFAULT) {};
-	virtual void SetMother(NeuralNetwork* mothernetwork) override;
+	NNFullyConnected(unsigned inputsize) :
+		_inputsize(inputsize), _learningrate(LEARNINGRATE_DEFAULT) {};
+	virtual void LinkLayer(NeuralNetwork* mothernetwork, unsigned nextLayerSize) override;
 	virtual vec_t FwdProp(vec_t& input) override;
 	virtual vec_t BackProp(vec_t& Wdelta) override;
 	virtual void UpdateWeightMatrix() override;
 	virtual void InitBatch() override;
-	virtual void NextLayerSize(unsigned nlsize) override;
+	virtual unsigned GetInputSize() const override { return _inputsize; }
 	virtual void SetLearningRate(const sca_t& learningrate) override { _learningrate = learningrate; };
 	virtual bool IsValid() const override;
 	friend bool LoadMatrix(const string& fn, NeuralNetwork& nn);
@@ -179,8 +200,8 @@ private:
 public:
 	NNTerminal(unsigned inputsize, erfunc_t errorFn, erfuncd_t errorFnDerived) :
 		_inputsize(inputsize), _errorFn(errorFn), _errorFnDerived(errorFnDerived) {}
-	virtual void SetMother(NeuralNetwork* mothernetwork) override;
-	virtual void NextLayerSize(unsigned nlsize) override {};
+	virtual void LinkLayer(NeuralNetwork* mothernetwork, unsigned nextLayerSize) override;
+	virtual unsigned GetInputSize() const override { return _inputsize; }
 	virtual vec_t FwdProp(vec_t& input) override;
 	virtual vec_t BackProp(vec_t& Wdelta) override;
 	virtual void UpdateWeightMatrix() override {};
@@ -205,6 +226,7 @@ public:
 	bool IsValid() const;
 	void SetLearningRate(const sca_t& learningrate);
 	void InitBatchAll();
+	void LinkLayerAll();
 	friend NeuralNetwork& operator<< (NeuralNetwork&, unique_ptr<NNLayer>&&);
 	friend bool LoadMatrix(const string& fn, NeuralNetwork& nn);
 	friend bool SaveMatrix(const string& fn, NeuralNetwork& nn, bool because_mtxcurve);
@@ -430,8 +452,8 @@ inline void ApplyFunc(vec_t& v, acfunc_t& fn) {
 }
 
 NeuralNetwork& operator<< (NeuralNetwork& nn, unique_ptr<NNLayer>&& layer) {
-	layer->SetMother(&nn);							// Important to have first the SetMother() call, then push_back() 
-	nn._layers.push_back(std::move(layer));			// because SetMother() refers to the last layer, which changes with push_back()
+	//	layer->SetMother(&nn); removed from here
+	nn._layers.push_back(std::move(layer));
 	return nn;
 }
 
@@ -494,7 +516,8 @@ bool BuildNetwork(NeuralNetwork & nn, std::list<string>& params) {
 		std::cout << "act.fn. " << it->first << std::endl;
 		auto activationFunction = it->second.first;
 		auto activationFnDerived = it->second.second;
-		nn << std::make_unique<NNFullyConnected>(layersize, activationFunction, activationFnDerived);
+		nn << std::make_unique<NNFullyConnected>(layersize);
+		nn << std::make_unique<NNNonLinearity>(activationFunction, activationFnDerived);
 		if (params.size() > 0) {
 			// check if next argument is an error function
 			auto it2 = global_errFns.find(params.front());
@@ -513,6 +536,7 @@ bool BuildNetwork(NeuralNetwork & nn, std::list<string>& params) {
 		std::cout << "  no error function given, using default (MSE)" << std::endl;
 		nn << std::make_unique<NNTerminal>(TERMINAL_LAYER_SIZE, squared_err, squared_err_d);
 	}
+	nn.LinkLayerAll();
 	return true;
 }
 
@@ -675,17 +699,8 @@ void NNFullyConnected::InitBatch() {
 	_batchcnt = 0;
 }
 
-// When NeuralNetwork::_layers gets the next layer, this is the point 
-// when the output dimension of the previous layer is determined (= the
-// input dimension of the next layer). This function is to "notify" the
-// previous layer about this via InitMatrix().
-void NNFullyConnected::NextLayerSize(unsigned nlsize) {
-	_outputsize = nlsize;
-	InitMatrix(_outputsize, _inputsize);
-}
-
 // Checks if the layer is fully constructed, so feed can be started
-// _input,_cached_preout not needed for "Valid" state
+// _input,_output not needed for "Valid" state
 bool NNFullyConnected::IsValid() const {
 	return ((_mothernetwork != nullptr) &&
 		(_batchcnt == 0) &&
@@ -704,16 +719,34 @@ bool NNFullyConnected::IsValid() const {
 		(_weightupdate.size() == _weightmatrix.size()) &&
 #endif
 		(_bias.size() == _weightmatrix_rows) &&
-		(_biasupdate.size() == _weightmatrix_rows) &&
-		IsValidAcFunc(_activFn) &&
-		IsValidAcFunc(_activFnDerived));
+		(_biasupdate.size() == _weightmatrix_rows));
 }
 
-void NNFullyConnected::SetMother(NeuralNetwork* mothernetwork) {
+bool NNNonLinearity::IsValid() const
+{
+	return (_mothernetwork != nullptr) &&
+		(_inputsize > 0) &&
+		(_outputsize > 0) &&
+		IsValidAcFunc(_activFn) && 
+		IsValidAcFunc(_activFnDerived);
+}
+
+void NNFullyConnected::LinkLayer(NeuralNetwork* mothernetwork, unsigned nextLayerSize) {
 	_mothernetwork = mothernetwork;
-	if ((_mothernetwork) && (_mothernetwork->GetLastLayer())) {
-		_mothernetwork->GetLastLayer()->NextLayerSize(_inputsize);
-	}
+
+	// When NeuralNetwork::_layers gets the next layer, this is the point 
+	// when the output dimension of the previous layer is determined (= the
+	// input dimension of the next layer). 
+
+	_outputsize = nextLayerSize;
+	InitMatrix(_outputsize, _inputsize);
+}
+
+void NNNonLinearity::LinkLayer(NeuralNetwork* mothernetwork, unsigned nextLayerSize) {
+	_mothernetwork = mothernetwork;
+
+	_inputsize = nextLayerSize;
+	_outputsize = nextLayerSize;
 }
 
 #ifdef USE_WEIGHT_NORMALIZATION
@@ -783,40 +816,53 @@ void NNFullyConnected::CalcGandVupdateFromWupdate(const mtx_t& wu, mtx_t& vu, ve
 }
 #endif//USE_WEIGHT_NORMALIZATION
 
+vec_t NNNonLinearity::FwdProp(vec_t& input)
+{
+	_input = input;
+	_output = _input;
+	ApplyFunc(_output, _activFn);
+	return _output;
+}
+
+vec_t NNNonLinearity::BackProp(vec_t& Wdelta)
+{
+	vec_t actFnDerAppliedToInput = _input;															// was: _cached_preout in NNFullyConnected::BackProp()
+	ApplyFunc(actFnDerAppliedToInput, _activFnDerived);
+	vec_t delta_to_pass;																			// was: mydelta in NNFullyConnected::BackProp()
+	op_MtxMtxHadamard(Wdelta, actFnDerAppliedToInput, delta_to_pass, 1, Wdelta.size());
+	return delta_to_pass;
+}
+
 vec_t NNFullyConnected::FwdProp(vec_t& input)
 {
 	vec_t output;
 	_input = input;
 
 #ifdef USE_WEIGHT_NORMALIZATION
-	mtx_t temp_weightmatrix = CalcWeightMatrixFromVandG();			//TEMP
+	mtx_t temp_weightmatrix = CalcWeightMatrixFromVandG();
 	op_MtxMtxMul(temp_weightmatrix, _input, output, _weightmatrix_rows, _weightmatrix_cols, 1);
 #else
 	op_MtxMtxMul(_weightmatrix, _input, output, _weightmatrix_rows, _weightmatrix_cols, 1);
 #endif
 
 	output += _bias;
-	_cached_preout = output;
-	ApplyFunc(output, _activFn);
+	_output = output;
 	return output;
 }
 
 vec_t NNFullyConnected::BackProp(vec_t & Wdelta)
 {
-	vec_t mydelta;
-	ApplyFunc(_cached_preout, _activFnDerived);
-	op_MtxMtxHadamard(Wdelta, _cached_preout, mydelta, 1, Wdelta.size()); 
 	vec_t delta_to_pass;
 #ifdef USE_WEIGHT_NORMALIZATION
-	mtx_t temp_weightmatrix = CalcWeightMatrixFromVandG();			//TEMP
-	op_MtxTMtxMul(temp_weightmatrix, mydelta, delta_to_pass, _weightmatrix_cols, _weightmatrix_rows, 1);
+	mtx_t temp_weightmatrix = CalcWeightMatrixFromVandG();
+	op_MtxTMtxMul(temp_weightmatrix, Wdelta, delta_to_pass, _weightmatrix_cols, _weightmatrix_rows, 1);
 #else
-	op_MtxTMtxMul(_weightmatrix, mydelta, delta_to_pass, _weightmatrix_cols, _weightmatrix_rows, 1);
+	op_MtxTMtxMul(_weightmatrix, Wdelta, delta_to_pass, _weightmatrix_cols, _weightmatrix_rows, 1);
 #endif
 		// W^T * delta
 
 	mtx_t wu;
-	op_MtxMtxTMul(mydelta, _input, wu, mydelta.size(), 1, _input.size());
+	op_MtxMtxTMul(Wdelta, _input, wu, Wdelta.size(), 1, _input.size());
 		// delta * _input^T
 
 #ifdef USE_WEIGHT_NORMALIZATION
@@ -829,7 +875,7 @@ vec_t NNFullyConnected::BackProp(vec_t & Wdelta)
 	_weightupdate -= wu;
 #endif
 
-	_biasupdate -= mydelta;
+	_biasupdate -= Wdelta;
 	_batchcnt++;
 	return delta_to_pass;
 }
@@ -1150,13 +1196,26 @@ void NeuralNetwork::InitBatchAll()
 	}
 }
 
+void NeuralNetwork::LinkLayerAll()
+{
+	auto terminalLayer = _layers.rbegin()->get();
+	terminalLayer->LinkLayer(this, 0);								// handle terminalLayer differently
+
+	auto rit = ++_layers.rbegin();
+	auto nextLayerRit = _layers.rbegin();
+	for (; rit != _layers.rend(); ++rit, ++nextLayerRit)
+	{
+		unsigned nextLayerSize = TERMINAL_LAYER_SIZE;
+		if (nextLayerRit != _layers.rbegin())
+			nextLayerSize = nextLayerRit->get()->GetInputSize();
+		rit->get()->LinkLayer(this, nextLayerSize);
+	}
+}
+
 // CLASS: NNTerminal
 
-void NNTerminal::SetMother(NeuralNetwork * mothernetwork) {
+void NNTerminal::LinkLayer(NeuralNetwork * mothernetwork, unsigned /* nextLayerSize unused */ ) {
 	_mothernetwork = mothernetwork;
-	if ((_mothernetwork) && (_mothernetwork->GetLastLayer())) {
-		_mothernetwork->GetLastLayer()->NextLayerSize(_inputsize);
-	}
 }
 
 // In the last (pseudo) layer, forward propagation means only to 
